@@ -19,13 +19,13 @@ matches, and nothing is generated.
 
 ## Install
 
-Publishing to PyPI is imminent. Today, install straight from git:
-
 ```bash
-pipx install git+https://github.com/shanedevane/etiny
+pipx install etiny
 ```
 
-Installing downloads nothing — bundles arrive on demand.
+(Or `pip install etiny` — [on PyPI](https://pypi.org/project/etiny/).
+Installing downloads nothing — bundles arrive on demand. For the optional
+neural matching: `pipx install "etiny[semantic]"`.)
 
 ## Quickstart
 
@@ -98,6 +98,6 @@ redistributing.
 
 ## Status
 
-Pre-beta. Spec-first development: the command reference in
+Pre-beta, `0.1.0` on PyPI. Spec-first development: the command reference in
 [docs/cli-commands.md](docs/cli-commands.md) is the source of truth the
 implementation follows.
