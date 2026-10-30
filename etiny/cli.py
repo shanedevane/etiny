@@ -15,6 +15,8 @@ from . import __version__
 from . import registry as reg
 from . import store
 
+DEFAULT_MODEL = "goals"
+
 
 def _parse_selector(selector: str) -> tuple[str, str | None]:
     model, _, version = selector.partition("@")
@@ -201,8 +203,25 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    bundle = _require_bundle(args.model, auto_pull=not args.no_pull)
-    return _run_tool(bundle, "scan", list(args.forward))
+    bundle = _require_bundle(
+        args.model,
+        auto_pull=not args.no_pull and (args.model == DEFAULT_MODEL or not sys.stdin.isatty()),
+    )
+    targets = list(args.forward)
+    if targets and targets[0] != "-" and not targets[0].startswith("-"):
+        return _run_tool(bundle, "scan", targets)
+    if not targets:
+        # No file given: scan every markdown file in the current directory.
+        docs = sorted(Path.cwd().glob("*.md"))
+        if not docs:
+            raise SystemExit("no .md files in the current directory (or pass a file: etiny scan notes.md)")
+        print(f"scanning {len(docs)} markdown file(s) in {Path.cwd()}")
+        failed = 0
+        for doc in docs:
+            print(f"\n===== {doc.name} =====")
+            failed += _run_tool(bundle, "scan", [str(doc)]) != 0
+        return 1 if failed else 0
+    return _run_tool(bundle, "scan", targets)
 
 
 def cmd_elevators(args: argparse.Namespace) -> int:
@@ -300,19 +319,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_verify, model_off=False)
 
-    p = sub.add_parser("scan", help="scan a document against a bundle (the run command)")
-    p.add_argument("--model", default="goals", help="model[@version] (default: goals)")
+    p = sub.add_parser("scan", help="scan a document (default: every .md in the current folder)")
+    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL} [personal goals])")
     p.add_argument("--no-pull", action="store_true", help="never auto-pull a missing model")
     p.add_argument("forward", nargs=argparse.REMAINDER, help="flags passed to the bundle's scan tool (--json, --elevator, --status, --semantic, file or '-')")
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("elevators", help="list the bundle's elevators (books)")
-    p.add_argument("--model", default="goals")
+    p = sub.add_parser("elevators", help="list the bundle's source works")
+    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL})")
     p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_elevators)
 
-    p = sub.add_parser("elevations", help="query the elevation corpus")
-    p.add_argument("--model", default="goals")
+    p = sub.add_parser("elevations", help="query the rule corpus")
+    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL})")
     p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_elevations)
 
@@ -322,12 +341,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_bare() -> int:
+    """Bare `etiny`: onboard with the default model — pull it if missing,
+    then show the shortest path to a first scan."""
+    path = store.resolve_version(DEFAULT_MODEL, None)
+    if not path:
+        print(f"no models installed — pulling the default ({DEFAULT_MODEL}) …")
+        entry = reg.resolve_entry(reg.fetch_registry(refresh=True), DEFAULT_MODEL, None)
+        _pull(DEFAULT_MODEL, entry)
+        path = store.resolve_version(DEFAULT_MODEL, None)
+    if path:
+        print(f"ready: {DEFAULT_MODEL} is installed ({path.name})")
+    print()
+    print("  etiny scan notes.md      scan one document")
+    print("  etiny scan                scan every .md in the current folder")
+    print("  etiny list --remote       see every model you can pull")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "command", None):
-        parser.print_help()
-        return 0
+        return cmd_bare()
     forward = getattr(args, "forward", None)
     if forward and forward[:1] == ["--"]:
         args.forward = forward[1:]

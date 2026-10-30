@@ -75,24 +75,32 @@ def sha256_file(path: Path) -> str:
 
 
 def download_archive(url: str, expected_bytes: int, sha256: str, dest_dir: Path) -> Path:
-    """Stream a bundle zip to disk with a percent readout, verifying size + sha."""
+    """Stream a bundle zip to disk, verifying size + sha. Progress readout
+    only when attached to a terminal; piped/CI output stays clean."""
+    import sys
+
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / url.rsplit("/", 1)[-1]
+    tty = sys.stdout.isatty()
     with tempfile.NamedTemporaryFile(dir=dest_dir, delete=False, suffix=".part") as tmp:
         with urllib.request.urlopen(url, timeout=60) as response:
             if response.status != 200:
                 raise SystemExit(f"download failed: {url} -> {response.status}")
             total = int(response.headers.get("Content-Length") or expected_bytes)
             done = 0
+            if not tty:
+                print(f"  downloading {total / 1e6:.1f} MB …", flush=True)
             while True:
                 chunk = response.read(1 << 18)
                 if not chunk:
                     break
                 tmp.write(chunk)
                 done += len(chunk)
-                pct = min(100, round(done * 100 / total)) if total else 0
-                print(f"\r  {pct:>3}%  {done / 1e6:6.1f} / {total / 1e6:.1f} MB", end="", flush=True)
-        print()
+                if tty:
+                    pct = min(100, round(done * 100 / total)) if total else 0
+                    print(f"\r  {pct:>3}%  {done / 1e6:6.1f} / {total / 1e6:.1f} MB", end="", flush=True)
+        if tty:
+            print()
         if expected_bytes and done != expected_bytes:
             raise SystemExit(f"size mismatch: got {done} bytes, registry says {expected_bytes}")
         tmp_path = Path(tmp.name)
