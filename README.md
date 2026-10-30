@@ -1,21 +1,14 @@
 # etiny
 
-**Elevation models for personal goals and pitch decks.** Scan any document
-against distilled rulebooks — deterministically, entirely on your machine.
-No accounts, no API.
+Scan your goals, plans, and pitch decks against the distilled advice of
+classic self-improvement works — deterministically, entirely on your
+machine. No accounts, no API.
 
-An etiny bundle is **runnable and readable**:
+## Usage
 
-- **Runnable** — `etiny scan notes.md` matches your document against the
-  bundle's detectors and elevation corpus with the same maths as the
-  [webapp](https://shanedevane.com/etiny/).
-- **Readable** — every bundle ships plain JSONL (rules, detectors, advice)
-  plus `AGENTS.md` and an installable Claude skill, so frontier models can
-  reason over the corpus directly. Unlike an ollama model, which can only
-  be run, an etiny bundle is data an agent can think with.
-
-Both passes are deterministic: the same text always produces the same
-matches, and nothing is generated.
+```bash
+etiny scan notes.md
+```
 
 ## Install
 
@@ -31,7 +24,7 @@ neural matching: `pipx install "etiny[semantic]"`.)
 
 ```bash
 etiny pull goals        # fetch the personal-goals bundle (~36 MB, sha-verified)
-etiny scan notes.md     # scan a document (regex + optional semantic pass)
+etiny scan notes.md     # scan a document (regex + optional neural pass)
 etiny scan - --json     # stdin, machine-readable output
 etiny elevators         # list the source works with their counts
 etiny elevations --search "habit"   # query the rule corpus
@@ -44,15 +37,19 @@ etiny doctor            # environment + store diagnostics
 If the model isn't local yet, `scan` offers to pull it first — never
 silently.
 
-## The command set
+## Why it's different
 
-Full reference: [docs/cli-commands.md](docs/cli-commands.md).
+An etiny bundle is **runnable and readable**:
 
-| Group | Commands |
-|---|---|
-| Lifecycle | `init` · `doctor` |
-| Manage bundles | `pull` · `list [--remote]` · `update [--upgrade]` · `info` · `rm` · `prune` · `verify` |
-| Use bundles | `scan` · `elevators` · `elevations` |
+- **Runnable** — `etiny scan` matches your document against the bundle's
+  rules and detectors with the same maths as the
+  [webapp](https://shanedevane.com/etiny/).
+- **Readable** — every bundle ships plain JSONL data plus `AGENTS.md` and
+  an installable Claude skill, so AI agents can reason over the corpus
+  directly.
+
+Both passes are deterministic: the same text always produces the same
+matches, and nothing is generated.
 
 ## How it works
 
@@ -68,10 +65,10 @@ pipx install  ──▶   pull ── reads ──▶ registry.json ─┐  mode
 - The **registry** is one `registry.json` on S3: every model, version, byte
   size, sha256, and URL. Each asset carries a mirror URL for resilience.
 - **Bundles are immutable per version**; `latest` is a moving pointer.
-- The CLI keeps **no telemetry** and needs **no account**.
-- Semantic matching (`--semantic auto`) upgrades itself automatically when
-  `onnxruntime` is installed (`pipx install "etiny[semantic]"`); without it
-  the regex pass stands alone and says so.
+- No telemetry, no account.
+- Neural matching (`--semantic auto`) activates automatically when
+  `onnxruntime` is installed; without it the regex pass stands alone and
+  says so.
 
 ## What's in a bundle
 
@@ -79,10 +76,9 @@ The current goals bundle (`etiny info goals`):
 
 | | |
 |---|---|
-| Elevators (source works) | 21 — public-domain classics (Meditations, As a Man Thinketh, Self-Help, …) |
-| Regex detectors / patterns | 31 / 6,292 |
-| Elevations (rules) | 15,833 |
-| Advice entries | 391 (gap actions + self-check questions) |
+| Source works | 21 public-domain classics (Meditations, As a Man Thinketh, Self-Help, …) |
+| Detectors / rules | 31 detectors, 6,292 patterns, 15,833 rules |
+| Advice | 391 entries (gap actions + self-check questions) |
 | Neural embedder | 33M-param q8 ONNX, runs offline |
 
 Also inside: dependency-free Python tools, `AGENTS.md`, a ready-to-install
