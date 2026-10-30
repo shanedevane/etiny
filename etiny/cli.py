@@ -9,13 +9,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
 from . import registry as reg
 from . import store
-
-DEFAULT_MODEL = "goals"
 
 
 def _parse_selector(selector: str) -> tuple[str, str | None]:
@@ -23,7 +22,7 @@ def _parse_selector(selector: str) -> tuple[str, str | None]:
     return model.strip(), (version.strip() or None) if version else None
 
 
-def _require_bundle(selector: str, auto_pull: bool) -> Path:
+def _require_bundle(selector: str, auto_pull: bool, quiet: bool = False) -> Path:
     model, version = _parse_selector(selector)
     path = store.resolve_version(model, version)
     if path:
@@ -36,7 +35,8 @@ def _require_bundle(selector: str, auto_pull: bool) -> Path:
     prompt = f"{model}@{entry['version']} is not installed — download it now ({size_mb} MB)? [y/N] "
     if sys.stdin.isatty() and input(prompt).strip().lower() not in ("y", "yes"):
         raise SystemExit(2)
-    print(f"pulling {model}@{entry['version']} …")
+    if not quiet:
+        print(f"pulling {model}@{entry['version']} …")
     _pull(model, entry)
     path = store.resolve_version(model, version)
     if not path:
@@ -53,7 +53,7 @@ def _run_tool(bundle: Path, tool: str, forward: list[str]) -> int:
     return subprocess.call([sys.executable, str(tool_path), *forward], cwd=str(bundle))
 
 
-def _pull(model: str, entry: dict) -> None:
+def _pull(model: str, entry: dict, quiet: bool = False) -> Path:
     archive = reg.download_archive(
         entry.get("url") or entry["mirrorUrl"],
         entry.get("bytes", 0),
@@ -61,7 +61,9 @@ def _pull(model: str, entry: dict) -> None:
         store.store_root() / "archives",
     )
     target = store.install_bundle(model, entry["version"], archive)
-    print(f"installed {model}@{entry['version']} -> {target}")
+    if not quiet:
+        print(f"installed {model}@{entry['version']} -> {target}")
+    return target
 
 
 # ------------------------------------------------------------- subcommands
@@ -69,71 +71,154 @@ def _pull(model: str, entry: dict) -> None:
 
 def cmd_pull(args: argparse.Namespace) -> int:
     registry = reg.fetch_registry(refresh=True)
-    selectors = args.selectors or []
-    if args.all:
+    selectors = list(args.selectors or [])
+    if selectors == ["all"]:
         selectors = sorted(reg.registry_models(registry))
     if not selectors:
-        raise SystemExit("nothing to pull: give a model or --all")
+        raise SystemExit("nothing to pull: give a model (or: etiny pull all)")
+    results = []
     for selector in selectors:
         model, version = _parse_selector(selector)
         entry = reg.resolve_entry(registry, model, version)
-        if store.model_dir(model, entry["version"]).is_dir() and not args.force:
-            print(f"{model}@{entry['version']} already installed (use --force to re-fetch)")
+        if store.model_dir(model, entry["version"]).is_dir():
+            if not args.json:
+                print(f"{model}@{entry['version']} already installed")
+            results.append({"model": model, "version": entry["version"], "status": "already-installed"})
             continue
-        _pull(model, entry)
+        _pull(model, entry, quiet=args.json)
+        results.append({"model": model, "version": entry["version"], "status": "installed"})
+    if args.json:
+        print(jsonlib.dumps(results, indent=2))
     return 0
+
+
+def _human_bytes(size: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1000:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} TB"
+
+
+def _clip(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1].rstrip() + "…"
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    """Remote: the registry catalog — one row per model at latest."""
+    registry = reg.fetch_registry(refresh=True)
+    models = reg.registry_models(registry)
+    if not models:
+        raise SystemExit("registry has no models published")
     rows = []
-    if args.remote:
-        registry = reg.fetch_registry(refresh=True)
-        local = {(m.model, m.version) for m in store.local_models()}
-        for name in sorted(reg.registry_models(registry)):
-            entry = reg.registry_models(registry)[name]
-            for version in sorted(entry.get("versions", {}), reverse=True):
-                meta = entry["versions"][version]
-                state = "installed" if (name, version) in local else "available"
-                if version == entry.get("latest"):
-                    state += " · latest"
-                rows.append((name, version, state, round(meta.get("bytes", 0) / 1e6, 1)))
-    else:
-        for m in store.local_models():
-            state = "latest" if store.read_latest(m.model) == m.version else "old"
-            rows.append((m.model, m.version, state, round(m.bytes / 1e6, 1)))
-    if not rows:
-        print("nothing installed — try: etiny pull goals  (or etiny list --remote)")
-        return 0
+    for name in sorted(models):
+        entry = models[name]
+        version = entry.get("latest") or sorted(entry.get("versions", {}))[-1]
+        meta = entry.get("versions", {}).get(version, {})
+        local = store.read_latest(name)
+        if local == version:
+            state = "installed"
+        elif local:
+            state = f"update ({local})"
+        else:
+            state = "-"
+        rows.append(
+            {
+                "model": name,
+                "version": version,
+                "description": entry.get("description", ""),
+                "bytes": meta.get("bytes", 0),
+                "state": state,
+            }
+        )
     if args.json:
-        print(jsonlib.dumps(
-            [{"model": r[0], "version": r[1], "state": r[2], "mb": r[3]} for r in rows], indent=2
-        ))
-    else:
-        print(f"{'MODEL':<16} {'VERSION':<12} {'STATE':<18} SIZE")
-        for name, version, state, mb in rows:
-            print(f"{name:<16} {version:<12} {state:<18} {mb} MB")
+        print(jsonlib.dumps(rows, indent=2))
+        return 0
+    name_w = max([len("NAME")] + [len(r["model"]) for r in rows])
+    desc_w = 44
+    print(f"{'NAME':<{name_w}}  {'DESCRIPTION':<{desc_w}}  {'SIZE':>8}  {'UPDATED':<11} STATE")
+    for r in rows:
+        print(
+            f"{r['model']:<{name_w}}  {_clip(r['description'], desc_w):<{desc_w}}"
+            f"  {_human_bytes(r['bytes']):>8}  {r['version']:<11} {r['state']}"
+        )
     return 0
 
 
-def cmd_update(args: argparse.Namespace) -> int:
+def cmd_models(args: argparse.Namespace) -> int:
+    """Local: what's installed in the store."""
+    rows = []
+    for m in store.local_models():
+        rows.append(
+            {
+                "name": f"{m.model}@{m.version}",
+                "bytes": m.bytes,
+                "pulled": time.strftime("%Y-%m-%d", time.localtime(m.path.stat().st_mtime)),
+                "state": "latest" if store.read_latest(m.model) == m.version else "old",
+            }
+        )
+    if not rows:
+        print("nothing installed — try: etiny pull personal-goals  (etiny list shows what exists)")
+        return 0
+    if args.json:
+        print(jsonlib.dumps(rows, indent=2))
+        return 0
+    name_w = max(len(r["name"]) for r in rows)
+    print(f"{'NAME':<{name_w}}  {'SIZE':>8}  PULLED      STATE")
+    for r in rows:
+        print(f"{r['name']:<{name_w}}  {_human_bytes(r['bytes']):>8}  {r['pulled']}  {r['state']}")
+    return 0
+
+
+def _update_run(args: argparse.Namespace, fetch: bool) -> int:
     registry = reg.fetch_registry(refresh=True)
     targets = [args.model] if args.model else sorted({m.model for m in store.local_models()})
-    changed = False
+    rows = []
     for model in targets:
         entry = reg.registry_models(registry).get(model)
         if not entry:
-            print(f"{model}: not in registry")
+            rows.append({"model": model, "status": "not-in-registry"})
+            if not args.json:
+                print(f"{model}: not in registry")
             continue
         latest = entry.get("latest")
         local_latest = store.read_latest(model)
         if latest == local_latest:
-            print(f"{model}: up to date ({latest})")
+            rows.append({"model": model, "current": local_latest, "latest": latest, "status": "up-to-date"})
+            if not args.json:
+                print(f"{model}: up to date ({latest})")
             continue
-        changed = True
-        print(f"{model}: {local_latest or 'none'} -> {latest}")
-        if args.upgrade:
-            _pull(model, reg.resolve_entry(registry, model, latest))
-    return 0 if (changed or not targets) else 0
+        rows.append({"model": model, "current": local_latest, "latest": latest, "status": "update-available"})
+        if not args.json:
+            print(f"{model}: {local_latest or 'none'} -> {latest}")
+        if fetch:
+            _pull(model, reg.resolve_entry(registry, model, latest), quiet=args.json)
+    if args.json:
+        print(jsonlib.dumps(rows, indent=2))
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    return _update_run(args, fetch=False)
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    return _update_run(args, fetch=True)
+
+
+def cmd_use(args: argparse.Namespace) -> int:
+    if args.model:
+        registry = reg.fetch_registry(refresh=True)
+        if args.model not in reg.registry_models(registry):
+            raise SystemExit(f"unknown model {args.model!r} (etiny list shows what exists)")
+        store.write_default_model(args.model)
+    current = store.default_model()
+    if args.json:
+        print(jsonlib.dumps({"default_model": current}))
+        return 0
+    note = "" if store.resolve_version(current, None) else f" (not installed — etiny pull {current})"
+    print(f"default model: {current}{note}")
+    return 0
 
 
 def cmd_info(args: argparse.Namespace) -> int:
@@ -168,79 +253,169 @@ def cmd_rm(args: argparse.Namespace) -> int:
             version = versions[0]
         elif versions:
             raise SystemExit(f"multiple versions installed: {versions} — pick {model}@<version>")
-    if store.remove_version(model, version, force=args.force):
-        print(f"removed {model}@{version}")
+    if store.read_latest(model) == version:
+        prompt = f"{model}@{version} is what 'latest' points at — remove it anyway? [y/N] "
+        if sys.stdin.isatty():
+            if input(prompt).strip().lower() not in ("y", "yes"):
+                raise SystemExit(2)
+        else:
+            raise SystemExit(
+                f"refusing to remove {model}@{version}: 'latest' points at it (confirm on a terminal)"
+            )
+    if store.remove_version(model, version, force=True):
+        if args.json:
+            print(jsonlib.dumps({"removed": f"{model}@{version}"}))
+        else:
+            print(f"removed {model}@{version}")
         return 0
     raise SystemExit(f"{model}@{version} is not installed")
 
 
 def cmd_prune(args: argparse.Namespace) -> int:
-    removed = 0
+    everything = args.target == "all"
+    removed = []
     for m in store.local_models():
-        if store.read_latest(m.model) == m.version:
+        if not everything and store.read_latest(m.model) == m.version:
             continue
         store.remove_version(m.model, m.version, force=True)
-        print(f"removed {m.model}@{m.version}")
-        removed += 1
-    if args.all:
+        removed.append(f"{m.model}@{m.version}")
+    if everything:
         shutil.rmtree(store.models_root(), ignore_errors=True)
-        print("removed all models (store emptied)")
-        removed += 1
+    if args.json:
+        print(jsonlib.dumps({"removed": removed, "store_emptied": everything}))
+        return 0
+    for name in removed:
+        print(f"removed {name}")
+    if everything and removed:
+        print("store emptied")
     if not removed:
         print("nothing to prune")
     return 0
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    bundle = _require_bundle(args.model, auto_pull=False) if not args.model_off else None
-    if bundle:
-        return _run_tool(bundle, "verify", list(args.forward))
-    failed = False
-    for m in store.local_models():
-        code = _run_tool(m.path, "verify", [])
-        failed = failed or code != 0
-    return 1 if failed else 0
+    if args.model:
+        bundle = _require_bundle(args.model, auto_pull=False)
+        targets = [m for m in store.local_models() if m.path == bundle]
+    else:
+        targets = store.local_models()
+    results = []
+    for m in targets:
+        tool = m.path / "tools" / "verify.py"
+        if not tool.is_file():
+            results.append({"model": m.model, "version": m.version, "ok": None, "note": "no verify tool in bundle"})
+            continue
+        out = subprocess.run(
+            [sys.executable, str(tool)], cwd=str(m.path), capture_output=True, text=True
+        )
+        results.append(
+            {"model": m.model, "version": m.version, "ok": out.returncode == 0, "output": out.stdout.strip()}
+        )
+    ok = all(r.get("ok") for r in results)
+    if args.json:
+        print(jsonlib.dumps({"ok": ok, "results": results}, indent=2))
+    else:
+        for r in results:
+            mark = "ok" if r.get("ok") else ("n/a" if r.get("ok") is None else "FAIL")
+            print(f"[{mark}] {r['model']}@{r['version']}")
+            if r.get("output") and not r.get("ok"):
+                print("    " + r["output"].replace("\n", "\n    "))
+    return 0 if ok else 1
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    bundle = _require_bundle(
-        args.model,
-        auto_pull=not args.no_pull and (args.model == DEFAULT_MODEL or not sys.stdin.isatty()),
-    )
-    targets = list(args.forward)
-    if targets and targets[0] != "-" and not targets[0].startswith("-"):
-        return _run_tool(bundle, "scan", targets)
-    if not targets:
-        # No file given: scan every markdown file in the current directory.
-        docs = sorted(Path.cwd().glob("*.md"))
-        if not docs:
-            raise SystemExit("no .md files in the current directory (or pass a file: etiny scan notes.md)")
-        print(f"scanning {len(docs)} markdown file(s) in {Path.cwd()}")
+    bundle = _require_bundle(store.default_model(), auto_pull=True, quiet=args.json)
+    forward = list(args.forward)
+    json_flag = ["--json"] if args.json else []
+    if forward:
+        return _run_tool(bundle, "scan", forward + json_flag)
+    if not sys.stdin.isatty():
+        return _run_tool(bundle, "scan", ["-"] + json_flag)
+    docs = sorted(Path.cwd().glob("*.md"))
+    if not docs:
+        raise SystemExit("no .md files in the current directory (or pass a file: etiny scan notes.md)")
+    print(f"scanning {len(docs)} markdown file(s) in {Path.cwd()}", flush=True)
+    failed = 0
+    for doc in docs:
+        print(f"\n===== {doc.name} =====", flush=True)
+        failed += _run_tool(bundle, "scan", [str(doc)] + json_flag) != 0
+    return 1 if failed else 0
+
+
+SKIP_DIRS = {"node_modules", "__pycache__", ".venv"}
+
+
+def _walk_docs(root: Path) -> list[Path]:
+    docs = []
+    for path in sorted(root.rglob("*.md")):
+        dirs = path.relative_to(root).parts[:-1]
+        if any(part in SKIP_DIRS or part.startswith(".") for part in dirs):
+            continue
+        docs.append(path)
+    return docs
+
+
+def cmd_walk(args: argparse.Namespace) -> int:
+    bundle = _require_bundle(store.default_model(), auto_pull=True, quiet=args.json)
+    tool = bundle / "tools" / "scan.py"
+    if not tool.is_file():
+        raise SystemExit(f"this bundle ships no scanner ({bundle.name})")
+    root = Path(args.directory) if args.directory else Path.cwd()
+    if not root.is_dir():
+        raise SystemExit(f"not a directory: {root}")
+    docs = _walk_docs(root)
+    if not docs:
+        raise SystemExit(f"no .md files under {root}")
+    if args.json:
+        results = []
         failed = 0
         for doc in docs:
-            print(f"\n===== {doc.name} =====")
-            failed += _run_tool(bundle, "scan", [str(doc)]) != 0
+            out = subprocess.run(
+                [sys.executable, str(tool), str(doc), "--json"],
+                cwd=str(bundle), capture_output=True, text=True,
+            )
+            ok = out.returncode == 0
+            failed += 0 if ok else 1
+            try:
+                parsed = jsonlib.loads(out.stdout)
+            except jsonlib.JSONDecodeError:
+                parsed = out.stdout.strip()
+            results.append({"path": str(doc.relative_to(root)), "ok": ok, "result": parsed})
+        print(jsonlib.dumps(
+            {"root": str(root), "files": len(results), "failed": failed, "results": results}, indent=2
+        ))
         return 1 if failed else 0
-    return _run_tool(bundle, "scan", targets)
+    print(f"walking {len(docs)} markdown file(s) under {root}", flush=True)
+    failed = 0
+    for doc in docs:
+        print(f"\n===== {doc.relative_to(root)} =====", flush=True)
+        failed += _run_tool(bundle, "scan", [str(doc)]) != 0
+    return 1 if failed else 0
 
 
 def cmd_elevators(args: argparse.Namespace) -> int:
-    bundle = _require_bundle(args.model, auto_pull=False)
-    return _run_tool(bundle, "elevators", list(args.forward))
+    bundle = _require_bundle(store.default_model(), auto_pull=False)
+    forward = list(args.forward)
+    if args.json:
+        forward.append("--json")
+    return _run_tool(bundle, "elevators", forward)
 
 
 def cmd_elevations(args: argparse.Namespace) -> int:
-    bundle = _require_bundle(args.model, auto_pull=False)
-    return _run_tool(bundle, "elevations", list(args.forward))
+    bundle = _require_bundle(store.default_model(), auto_pull=False)
+    forward = list(args.forward)
+    if args.query and not any(a in forward for a in ("--search", "--id", "--elevator")):
+        forward = ["--search", args.query, *forward]
+    if args.json:
+        forward.append("--json")
+    return _run_tool(bundle, "elevations", forward)
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
-    ok = True
+def cmd_doctor(args: argparse.Namespace) -> int:
+    checks = []
 
     def line(label: str, detail: str, good: bool) -> None:
-        nonlocal ok
-        ok = ok and good
-        print(f"  [{'ok' if good else 'FAIL'}] {label:<20} {detail}")
+        checks.append({"check": label, "detail": detail, "ok": good})
 
     import importlib.util
 
@@ -260,6 +435,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         line("registry", f"{len(reg.registry_models(registry))} model(s) indexed", True)
     except SystemExit as exc:
         line("registry", str(exc), False)
+    line("default model", store.default_model(), True)
     line("onnxruntime", "installed (semantic on)" if importlib.util.find_spec("onnxruntime") else "absent (regex-only fallback)", True)
     for m in store.local_models():
         doc = m.version_doc
@@ -268,7 +444,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
             f"verified manifest, runnable={m.runnable}" if doc else "VERSION.json unreadable",
             bool(doc),
         )
-    print("doctor:", "healthy" if ok else "problems found")
+    ok = all(c["ok"] for c in checks)
+    if args.json:
+        print(jsonlib.dumps({"ok": ok, "checks": checks}, indent=2))
+    else:
+        for c in checks:
+            print(f"  [{'ok' if c['ok'] else 'FAIL'}] {c['check']:<20} {c['detail']}")
+        print("doctor:", "healthy" if ok else "problems found")
     return 0 if ok else 1
 
 
@@ -285,20 +467,32 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("pull", help="download and install a model bundle")
-    p.add_argument("selectors", nargs="*", help="model[@version] (default version: latest)")
-    p.add_argument("--all", action="store_true", help="pull every published model")
-    p.add_argument("--force", action="store_true", help="re-fetch even if installed")
+    p.add_argument("selectors", nargs="*", help="model[@version] … or 'all' (default version: latest)")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_pull)
 
-    p = sub.add_parser("list", help="list local (or --remote) models")
-    p.add_argument("--remote", action="store_true", help="list registry versions, mark local/stale")
+    p = sub.add_parser("list", help="list registry models (what you can pull)")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_list)
 
+    p = sub.add_parser("models", help="list installed models")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_models)
+
     p = sub.add_parser("update", help="check for newer versions of local models")
     p.add_argument("model", nargs="?", help="limit to one model")
-    p.add_argument("--upgrade", action="store_true", help="also download and re-point latest")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_update)
+
+    p = sub.add_parser("upgrade", help="fetch newer versions and re-point latest")
+    p.add_argument("model", nargs="?", help="limit to one model")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_upgrade)
+
+    p = sub.add_parser("use", help="show or set the default model")
+    p.add_argument("model", nargs="?", help="model name (omit to just show)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_use)
 
     p = sub.add_parser("info", help="manifest + counts + path for an installed model")
     p.add_argument("model", help="model[@version]")
@@ -307,55 +501,82 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("rm", help="remove an installed version")
     p.add_argument("model", help="model[@version]")
-    p.add_argument("--force", action="store_true", help="remove even if latest points at it")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_rm)
 
-    p = sub.add_parser("prune", help="remove non-latest local versions")
-    p.add_argument("--all", action="store_true", help="remove every model (empty the store)")
+    p = sub.add_parser("prune", help="remove non-latest local versions ('all': empty the store)")
+    p.add_argument("target", nargs="?", help="'all' to remove everything")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_prune)
 
     p = sub.add_parser("verify", help="verify bundle checksums against VERSION.json")
     p.add_argument("model", nargs="?", help="model[@version]; omit to verify everything local")
-    p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
-    p.set_defaults(func=cmd_verify, model_off=False)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser("scan", help="scan a document (default: every .md in the current folder)")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL} [personal goals])")
-    p.add_argument("--no-pull", action="store_true", help="never auto-pull a missing model")
-    p.add_argument("forward", nargs=argparse.REMAINDER, help="flags passed to the bundle's scan tool (--json, --elevator, --status, --semantic, file or '-')")
+    p = sub.add_parser("scan", help="scan a document with the default model (etiny use switches it); no file: every .md in the current folder")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("elevators", help="list the bundle's source works")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL})")
+    p = sub.add_parser("walk", help="scan every .md under a folder, recursively")
+    p.add_argument("directory", nargs="?", help="folder to walk (default: the current one)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_walk)
+
+    p = sub.add_parser("elevators", help="list the default model's source works (etiny use switches it)")
+    p.add_argument("--json", action="store_true")
     p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_elevators)
 
-    p = sub.add_parser("elevations", help="query the rule corpus")
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"model[@version] (default: {DEFAULT_MODEL})")
+    p = sub.add_parser("elevations", help="search the default model's rule corpus (etiny use switches it)")
+    p.add_argument("query", nargs="?", help="search text (positional)")
+    p.add_argument("--json", action="store_true")
     p.add_argument("forward", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_elevations)
 
     p = sub.add_parser("doctor", help="environment + store diagnostics")
+    p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_doctor)
 
+    p = sub.add_parser("help", help="show help (for one command: etiny help scan)")
+    p.add_argument("topic", nargs="?", help="command name (default: top-level help)")
+    p.set_defaults(func=cmd_help)
+
     return parser
+
+
+def cmd_help(args: argparse.Namespace) -> int:
+    parser = build_parser()
+    if not args.topic:
+        parser.print_help()
+        return 0
+    subaction = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    target = subaction.choices.get(args.topic) if subaction else None
+    if target is None:
+        raise SystemExit(f"unknown command {args.topic!r} — try: etiny help")
+    target.print_help()
+    return 0
 
 
 def cmd_bare() -> int:
     """Bare `etiny`: onboard with the default model — pull it if missing,
     then show the shortest path to a first scan."""
-    path = store.resolve_version(DEFAULT_MODEL, None)
+    model = store.default_model()
+    path = store.resolve_version(model, None)
     if not path:
-        print(f"no models installed — pulling the default ({DEFAULT_MODEL}) …")
-        entry = reg.resolve_entry(reg.fetch_registry(refresh=True), DEFAULT_MODEL, None)
-        _pull(DEFAULT_MODEL, entry)
-        path = store.resolve_version(DEFAULT_MODEL, None)
+        print(f"no models installed — pulling the default ({model}) …")
+        entry = reg.resolve_entry(reg.fetch_registry(refresh=True), model, None)
+        _pull(model, entry)
+        path = store.resolve_version(model, None)
     if path:
-        print(f"ready: {DEFAULT_MODEL} is installed ({path.name})")
+        print(f"ready: {model} is installed ({path.name})")
     print()
     print("  etiny scan notes.md      scan one document")
     print("  etiny scan                scan every .md in the current folder")
-    print("  etiny list --remote       see every model you can pull")
+    print("  etiny walk                scan every .md in every subfolder")
+    print("  etiny list                see every model you can pull")
+    print(f"  etiny use <model>         switch the default (now: {model})")
     return 0
 
 

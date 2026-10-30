@@ -20,6 +20,22 @@ def registry_cache_path() -> Path:
     return store_root() / "registry.json"
 
 
+def default_model() -> str:
+    """The model `use` selected (persisted); falls back to the global default."""
+    pointer = store_root() / "default-model"
+    if pointer.is_file():
+        value = pointer.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+    return "personal-goals"
+
+
+def write_default_model(model: str) -> None:
+    root = store_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "default-model").write_text(model, encoding="utf-8")
+
+
 def models_root() -> Path:
     return store_root() / "models"
 
