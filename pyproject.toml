@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "etiny"
+version = "0.1.0"
+description = "Elevation models for personal goals and pitch decks: pull versioned bundles, scan documents deterministically, entirely on your machine."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+keywords = ["goals", "habits", "pitch-decks", "deterministic", "cli"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+semantic = ["onnxruntime"]
+
+[project.scripts]
+etiny = "etiny.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["etiny"]
