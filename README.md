@@ -1,7 +1,16 @@
 # etiny: Explorable tiny models for your second brain
 
-Pull whole libraries of distilled book advice and scan your own documents
-against them, locally. Like ollama, but the models are libraries.
+28,000+ advice distilled from key books on the topics of personal goals, career advice and startup pitch decks...
+
+Each model comes with source attributes, exceprts and custom advice. Etiny includes python cli tools to scan and match your .md or .txt files and return results that match based on simarlity.
+
+WEB DEMO: www.shanedevane.com/etiny/
+
+| Model | Sources | Rules | Detectors | Advice | Pull |
+|---|---|---|---|---|---|
+| **personal-goals** (default) | 21 | 15,833 | 31 | 391 | 35.8 MB |
+| **career-advice** | 5 | 5,026 | 142 | 1,877 | 25 MB |
+| **pitch-decks** | 5 | 75 | 75 | 1,132 | 22.5 MB |
 
 - **Pull models, not just install one.** `etiny pull goals` fetches a
   versioned, sha-verified bundle from the registry. More models (pitch
@@ -13,13 +22,11 @@ against them, locally. Like ollama, but the models are libraries.
   your own words back as evidence.
 - **No accounts, no API, no telemetry.**
 
-<!-- Screenshots: drop PNGs into docs/screens/ and uncomment
 <p align="center">
-  <a href="docs/screens/pull.png"><img src="docs/screens/pull.png" width="32%"></a>
-  <a href="docs/screens/scan.png"><img src="docs/screens/scan.png" width="32%"></a>
-  <a href="docs/screens/list.png"><img src="docs/screens/list.png" width="32%"></a>
+  <a href="docs/screens/screen-1.png"><img src="docs/screens/screen-1.jpg" width="32%"></a>
+  <a href="docs/screens/screen-2.png"><img src="docs/screens/screen-2.jpg" width="32%"></a>
+  <a href="docs/screens/screen-3.png"><img src="docs/screens/screen-3.jpg" width="32%"></a>
 </p>
--->
 
 ## Usage
 
@@ -27,7 +34,7 @@ against them, locally. Like ollama, but the models are libraries.
 etiny scan notes.md          # scan one document [model: personal goals, default]
 etiny scan                   # scan every .md in the current folder
 etiny list --remote          # every model you can pull
-etiny pull goals             # fetch the personal-goals bundle (~36 MB, sha-verified)
+etiny pull personal-goals    # fetch the personal-goals bundle (~36 MB, sha-verified)
 etiny pull pitch-decks       # a second model, same store
 ```
 
@@ -92,20 +99,9 @@ pipx install  ──▶   pull ── reads ──▶ registry.json ─┐  mode
   `onnxruntime` is installed. Without it the regex pass stands alone and
   says so.
 
-## What's in a bundle
-
-The current goals bundle (`etiny info goals`):
-
-| | |
-|---|---|
-| Source works | 21 public-domain books (Meditations, As a Man Thinketh, Self-Help, and more) |
-| Detectors and rules | 31 detectors, 6,292 patterns, 15,833 rules |
-| Advice | 391 entries (gap actions plus self-check questions) |
-| Neural embedder | 33M-param q8 ONNX, runs offline |
-
-Also inside: dependency-free Python tools, `AGENTS.md`, a ready-to-install
-Claude Code skill, and `VERSION.json` with the sha256 of every file
-(`etiny verify` re-checks them).
+Also inside every bundle: dependency-free Python tools, `AGENTS.md`, a
+ready-to-install Claude Code skill, and `VERSION.json` with the sha256 of
+every file (`etiny verify` re-checks them).
 
 ## Copyright
 
